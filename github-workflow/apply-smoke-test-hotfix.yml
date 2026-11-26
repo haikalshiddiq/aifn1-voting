@@ -1,4 +1,4 @@
-name: Apply smoke-test account hotfix
+name: Apply smoke-test account hotfix v2
 on:
   workflow_dispatch:
 permissions:
@@ -11,19 +11,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Apply hotfix
+      - name: Apply corrected hotfix
         run: python3 tools/apply-smoke-test-hotfix.py
       - name: Validate patched source
         run: |
+          set -euo pipefail
           node --check worker/src/index.js
           node --check frontend/admin.js
           grep -q "SMOKE-AIFN1-2026" database/seed_students.sql
           grep -q "reset-smoke-test" worker/src/index.js
+          grep -q 'NOT LIKE.*SMOKE-%' worker/src/index.js
       - name: Commit patched source
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add database/seed_students.sql worker/src/index.js frontend/admin.html frontend/admin.js docs/LIVE_SMOKE_TEST.md
-          git diff --cached --quiet && exit 0
+          if git diff --cached --quiet; then
+            echo "No changes to commit. Hotfix is already applied."
+            exit 0
+          fi
           git commit -m "Add isolated live smoke-test account and admin reset"
           git push
