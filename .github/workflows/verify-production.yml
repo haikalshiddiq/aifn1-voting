@@ -1,0 +1,35 @@
+name: Verify production voting
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Deploy Cloudflare Worker"]
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/verify-production.yml"
+      - "tests/verify-production-readonly.mjs"
+      - "wrangler.jsonc"
+      - "cloudflare-frontend/**"
+permissions:
+  contents: read
+concurrency:
+  group: verify-production-voting
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    name: Read-only production checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Verify API, frontend, redirects and authentication gates
+        env:
+          API_BASE: ${{ vars.API_BASE }}
+          SITE_URL: https://haikalshiddiq.github.io/aifn1-voting
+          CLOUDFLARE_FRONTEND: https://aifn1-voting.hicall.workers.dev
+        run: node tests/verify-production-readonly.mjs
