@@ -1,0 +1,13 @@
+name = "aifn1-voting-api"
+main = "src/index.js"
+compatibility_date = "2026-11-26"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "aifn1-voting"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[vars]
+ALLOWED_ORIGINS = "https://USERNAME.github.io"
+TURNSTILE_SITE_KEY = "REPLACE_WITH_TURNSTILE_SITE_KEY"
+EXPECTED_TURNSTILE_HOSTNAMES = "USERNAME.github.io"

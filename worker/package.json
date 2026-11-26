@@ -1,0 +1,23 @@
+{
+  "name": "aifn1-voting-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute aifn1-voting --remote --file=../database/schema.sql",
+    "db:seed": "wrangler d1 execute aifn1-voting --remote --file=../database/seed_students.sql",
+    "test": "python3 ../tests/verify.py",
+    "test:e2e": "node ../tests/e2e-login-logout.mjs",
+    "test:http": "bash ../tests/http-smoke.sh",
+    "test:predeploy": "bash ../tests/predeploy-check.sh",
+    "test:production": "node ../tests/verify-production.mjs",
+    "pages:dev": "npx wrangler pages dev ../frontend --port 8000"
+  },
+  "devDependencies": {
+    "wrangler": "4.47.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
