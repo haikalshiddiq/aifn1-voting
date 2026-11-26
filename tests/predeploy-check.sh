@@ -11,8 +11,7 @@ node --check frontend/admin.js
 echo '[3/6] Menjalankan QA + E2E handler...'
 python3 tests/verify.py
 echo '[4/6] Memeriksa seed mahasiswa...'
-COUNT=$(grep -c "^('" database/seed_students.sql)
-test "$COUNT" = 37 || { echo "GAGAL: seed berisi $COUNT mahasiswa, seharusnya 37"; exit 1; }
+python3 tests/student_counts.py
 echo '[5/6] Memeriksa placeholder dan secret...'
 ! grep -R -E 'TURNSTILE_SECRET\s*[=:]\s*["'\'' ]*0x|ADMIN_PASSWORD\s*[=:]\s*["'\'' ]+[^R]' frontend worker/src 2>/dev/null || { echo 'GAGAL: kemungkinan secret masuk source'; exit 1; }
 grep -q '__API_BASE__' frontend/config.js

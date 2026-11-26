@@ -27,10 +27,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: worker/package-lock.json
 
@@ -117,16 +117,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          OUTPUT=$(npx wrangler d1 execute aifn1-voting --remote --config wrangler.jsonc --json --command="SELECT COUNT(*) AS total FROM students")
-          printf '%s' "$OUTPUT" > /tmp/d1-count.json
-          python3 - <<'PY'
-          import json
-          data = json.load(open("/tmp/d1-count.json", encoding="utf-8"))
-          rows = data[0]["results"] if isinstance(data, list) else data["results"]
-          total = int(rows[0]["total"])
-          assert total == 37, f"Expected 37 students, got {total}"
-          print("D1 verified: 37 students")
-          PY
+          QUERY=$(python3 ../tests/student_counts.py --query)
+          npx wrangler d1 execute aifn1-voting --remote --config wrangler.jsonc --json --command="$QUERY" > /tmp/d1-count.json
+          python3 ../tests/student_counts.py --wrangler-json /tmp/d1-count.json
 
       - name: Deploy Worker and synchronize Worker secrets
         id: deploy
