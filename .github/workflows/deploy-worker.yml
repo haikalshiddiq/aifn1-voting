@@ -1,0 +1,157 @@
+name: Deploy Cloudflare Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - "database/**"
+      - "tests/**"
+      - ".github/workflows/deploy-worker.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-worker-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Test, migrate D1, and deploy Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install Worker dependencies
+        working-directory: worker
+        run: npm ci
+
+      - name: Validate required GitHub settings
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+          EXPECTED_TURNSTILE_HOSTNAMES: ${{ vars.EXPECTED_TURNSTILE_HOSTNAMES }}
+          TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+        run: |
+          set -euo pipefail
+          required=(
+            CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID D1_DATABASE_ID
+            TURNSTILE_SECRET ADMIN_PASSWORD ALLOWED_ORIGINS
+            EXPECTED_TURNSTILE_HOSTNAMES TURNSTILE_SITE_KEY
+          )
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name belum dikonfigurasi di GitHub Secrets/Variables."
+              exit 1
+            fi
+          done
+
+      - name: Build production Wrangler configuration
+        env:
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+          EXPECTED_TURNSTILE_HOSTNAMES: ${{ vars.EXPECTED_TURNSTILE_HOSTNAMES }}
+          TURNSTILE_SITE_KEY: ${{ vars.TURNSTILE_SITE_KEY }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source = Path("worker/wrangler.jsonc.example")
+          target = Path("worker/wrangler.jsonc")
+          config = json.loads(source.read_text(encoding="utf-8"))
+          config["d1_databases"][0]["database_id"] = os.environ["D1_DATABASE_ID"]
+          config["vars"]["ALLOWED_ORIGINS"] = os.environ["ALLOWED_ORIGINS"]
+          config["vars"]["EXPECTED_TURNSTILE_HOSTNAMES"] = os.environ["EXPECTED_TURNSTILE_HOSTNAMES"]
+          config["vars"]["TURNSTILE_SITE_KEY"] = os.environ["TURNSTILE_SITE_KEY"]
+          target.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Run QA before production deployment
+        run: bash tests/predeploy-check.sh
+
+      - name: Apply D1 schema
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          npx wrangler d1 execute aifn1-voting
+          --remote
+          --config wrangler.jsonc
+          --file ../database/schema.sql
+
+      - name: Seed or synchronize students
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          npx wrangler d1 execute aifn1-voting
+          --remote
+          --config wrangler.jsonc
+          --file ../database/seed_students.sql
+
+      - name: Verify D1 student count
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          OUTPUT=$(npx wrangler d1 execute aifn1-voting --remote --config wrangler.jsonc --json --command="SELECT COUNT(*) AS total FROM students")
+          printf '%s' "$OUTPUT" > /tmp/d1-count.json
+          python3 - <<'PY'
+          import json
+          data = json.load(open("/tmp/d1-count.json", encoding="utf-8"))
+          rows = data[0]["results"] if isinstance(data, list) else data["results"]
+          total = int(rows[0]["total"])
+          assert total == 37, f"Expected 37 students, got {total}"
+          print("D1 verified: 37 students")
+          PY
+
+      - name: Deploy Worker and synchronize Worker secrets
+        id: deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          wranglerVersion: "4.47.0"
+          command: deploy --config wrangler.jsonc
+          secrets: |
+            TURNSTILE_SECRET
+            ADMIN_PASSWORD
+        env:
+          TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+
+      - name: Production Worker health check
+        env:
+          API_BASE: ${{ vars.API_BASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${API_BASE:-}" ]; then
+            echo "::warning::API_BASE belum diisi; health check URL dilewati pada deploy pertama."
+            exit 0
+          fi
+          curl --fail --silent --show-error --retry 5 --retry-delay 3 \
+            "${API_BASE%/}/api/health" | python3 -m json.tool
