@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "aifn1-voting-api",
+  "name": "aifn-voting-uts",
   "main": "src/index.js",
   "compatibility_date": "2026-11-26",
   "d1_databases": [
