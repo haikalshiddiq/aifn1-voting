@@ -1,0 +1,8 @@
+{
+  "name": "aifn1-voting",
+  "compatibility_date": "2026-11-26",
+  "assets": {
+    "directory": "./cloudflare-frontend"
+  },
+  "previews": {}
+}
