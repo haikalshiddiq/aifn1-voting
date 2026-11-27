@@ -74,6 +74,21 @@ try {
     password: "local-regression-only", turnstileToken: "local",
   } });
   assert.equal(admin.status, 200);
+  assert.equal((await call("/api/admin/dashboard")).status, 401);
+  assert.equal((await call("/api/admin/dashboard", { token: normal.data.token })).status, 401);
+  const dashboard = await call("/api/admin/dashboard", { token: admin.data.token });
+  assert.equal(dashboard.status, 200);
+  const student = dashboard.data.students.find(row => row.nim === "25110200041");
+  assert.equal(student.voted, 1);
+  assert.equal(student.group_method, "Berdasarkan minat tema UTS");
+  themes.forEach((theme, i) => assert.equal(student["theme_rank_" + (i + 1)], theme));
+  assert.equal(student.custom_theme, "Regression theme");
+  assert.equal(student.reason, "class-regression");
+  assert.ok(student.created_at && student.updated_at);
+  const notVoted = dashboard.data.students.find(row => row.nim === "25110200029");
+  assert.equal(notVoted.voted, 0);
+  assert.equal(notVoted.group_method, null);
+  assert.equal(notVoted.theme_rank_1, null);
   const csv = await call("/api/admin/export", { token: admin.data.token });
   assert.equal(csv.status, 200);
   assert.match(csv.text, /class-regression/);
@@ -89,7 +104,7 @@ try {
   assert.equal((await call("/api/me", { token: normal.data.token })).status, 200);
   assert.equal((await call("/api/vote", { token: normal.data.token })).data.vote.reason, "class-regression");
   assert.equal((await call("/api/stats")).data.voted, 1);
-  console.log("PASS SMOKE ISOLATION: real SQLite, reseed, statistics, CSV, groups, scoped reset, preserved class vote");
+  console.log("PASS SMOKE ISOLATION: real SQLite, admin-only vote details, reseed, statistics, CSV, groups, scoped reset, preserved class vote");
 } finally {
   sqlite.close();
 }
