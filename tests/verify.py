@@ -19,3 +19,5 @@ subprocess.run(['node', str(root/'tests/e2e-login-logout.mjs')], check=True)
 print('PASS FULL QA: static verification and E2E login/logout')
 
 subprocess.run(['node', str(root/'tests/e2e-smoke-isolation.mjs')], check=True)
+
+subprocess.run(['node', str(root/'tests/admin-ui-regression.mjs')], check=True)
