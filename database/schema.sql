@@ -42,3 +42,5 @@ CREATE TABLE IF NOT EXISTS audit_log (
 INSERT OR IGNORE INTO settings(setting_key,setting_value) VALUES
  ('voting_status','open'),
  ('deadline','2026-11-29T23:59:00+07:00');
+
+CREATE INDEX IF NOT EXISTS idx_audit_actor_id ON audit_log(actor,id);

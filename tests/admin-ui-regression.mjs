@@ -23,13 +23,13 @@ async function boot({ token = null, oldError = "" } = {}) {
   for (const match of html.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)) {
     const classes = new Set((match[0].match(/class="([^"]*)"/)?.[1] || "").split(/\s+/));
     nodes.set("#" + match[1], {
-      value: "", innerHTML: "", textContent: "", disabled: false,
-      classList: { add: x => classes.add(x), remove: x => classes.delete(x), contains: x => classes.has(x) }
+      value: "", innerHTML: "", textContent: "", disabled: false, scrollIntoView() {},
+      classList: { add: x => classes.add(x), remove: x => classes.delete(x), contains: x => classes.has(x), toggle(x, force) { if (force) classes.add(x); else classes.delete(x); return classes.has(x); } }
     });
   }
   nodes.get("#message").innerHTML = oldError;
   const storage = new Map(token ? [["admin_token", token]] : []);
-  const state = { dashboard: structuredClone(dashboard), loginCalls: 0, nextLogin: null, dashboardError: null };
+  const state = { dashboard: structuredClone(dashboard), loginCalls: 0, nextLogin: null, dashboardError: null, historyCalls: 0 };
   const turnstile = { getResponse: () => "local-ui-test", reset() {}, render: () => 0 };
   const sandbox = {
     window: { APP_CONFIG: { API_BASE: "https://api.example.test" }, turnstile }, turnstile,
@@ -46,6 +46,20 @@ async function boot({ token = null, oldError = "" } = {}) {
       }
       if (url.endsWith("/api/admin/dashboard")) return state.dashboardError
         ? response({ error: state.dashboardError }, 503) : response(state.dashboard);
+      if (url.includes("/api/admin/students/")) {
+        state.historyCalls++;
+        if (url.includes("?before=")) return response({
+          student: { nim: "25110200041", name: "Student example" },
+          events: [{ id: 1, action: "save_vote", created_at: "2026-11-26 20:00:00",
+            network: {}, vote: null, legacy_method: "Pilih anggota sendiri" }], nextBefore: null
+        });
+        return response({
+          student: { nim: "25110200041", name: "Student example" },
+          events: [{ id: 3, action: "save_vote", created_at: "2026-11-27 01:30:00",
+            network: { ip: "203.0.113.10", city: "<script>attack()</script>", region: "Jakarta", country: "ID" },
+            vote: dashboard.students[0] }], nextBefore: 3
+        });
+      }
       throw new Error("Unexpected request: " + url);
     },
     setInterval(callback) { queueMicrotask(callback); return 1; }, clearInterval() {},
@@ -91,6 +105,23 @@ assert.match(nodes.get("#lastRefresh").textContent, /WIB/);
 nodes.get("#search").value = "25110200029";
 nodes.get("#search").oninput();
 assert.ok(!nodes.get("#students").innerHTML.includes("25110200041"));
+
+await nodes.get("#students").onclick({ target: { closest: () => ({ dataset: { historyNim: "25110200041" } }) } });
+assert.equal(nodes.get("#historyPanel").classList.contains("hidden"), false);
+assert.match(nodes.get("#historyList").innerHTML, /203.0.113.10/);
+assert.match(nodes.get("#historyList").innerHTML, /WIB/);
+assert.match(nodes.get("#historyList").innerHTML, /&lt;script&gt;/);
+assert.ok(!nodes.get("#historyList").innerHTML.includes("<script>"));
+assert.match(nodes.get("#historyList").innerHTML, /Pembiayaan UMKM/);
+assert.equal(nodes.get("#historyMore").classList.contains("hidden"), false);
+await nodes.get("#historyMore").onclick();
+assert.match(nodes.get("#historyList").innerHTML, /Detail pilihan lengkap pada kejadian lama belum direkam/);
+assert.match(nodes.get("#historyList").innerHTML, /Tidak tersedia/);
+assert.equal(nodes.get("#historyMore").classList.contains("hidden"), true);
+assert.equal(state.historyCalls, 2);
+nodes.get("#historyClose").onclick();
+assert.equal(nodes.get("#historyPanel").classList.contains("hidden"), true);
+
 state.dashboardError = "Gagal memuat dashboard";
 await nodes.get("#refresh").onclick();
 assert.match(nodes.get("#message").innerHTML, /Gagal memuat dashboard/);
@@ -98,4 +129,4 @@ assert.equal(nodes.get("#refresh").disabled, false);
 const restored = await boot({ token: "existing-local-session", oldError: "Password admin salah." });
 assert.equal(restored.nodes.get("#message").innerHTML, "", "Session restore must clear stale login errors");
 assert.equal(restored.nodes.get("#panel").classList.contains("hidden"), false);
-console.log("PASS ADMIN UI: failed then successful login, duplicate submit blocked, restored session, vote details, escaping, WIB, search and refresh");
+console.log("PASS ADMIN UI: failed then successful login, duplicate submit blocked, restored session, vote details, escaping, WIB, search, refresh and paginated private activity history");

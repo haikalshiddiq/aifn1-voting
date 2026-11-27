@@ -17,22 +17,29 @@ class Statement {
 const DB = {
   prepare(sql) { return new Statement(sql); },
   async batch(statements) {
-    const results = [];
-    for (const statement of statements) results.push(await statement.run());
-    return results;
+    sqlite.exec("BEGIN");
+    try {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      sqlite.exec("COMMIT");
+      return results;
+    } catch (error) { sqlite.exec("ROLLBACK"); throw error; }
   },
 };
 const env = {
   DB, BYPASS_TURNSTILE: "true", ADMIN_PASSWORD: "local-regression-only",
   ALLOWED_ORIGINS: "https://example.test",
 };
-async function call(path, { method = "GET", token, body } = {}) {
+async function call(path, { method = "GET", token, body, ip, cf } = {}) {
   const headers = { Origin: "https://example.test" };
+  if (ip) headers["CF-Connecting-IP"] = ip;
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body) headers["Content-Type"] = "application/json";
-  const response = await handle(new Request(`https://api.example.test${path}`, {
+  const request = new Request(`https://api.example.test${path}`, {
     method, headers, body: body ? JSON.stringify(body) : undefined,
-  }), env);
+  });
+  if (cf) Object.defineProperty(request, "cf", { value: cf });
+  const response = await handle(request, env);
   const text = await response.text();
   return { status: response.status, text,
     data: response.headers.get("content-type")?.includes("json") ? JSON.parse(text) : null };
@@ -96,6 +103,70 @@ try {
   const groups = await call("/api/admin/groups", { token: admin.data.token });
   assert.equal(groups.status, 200);
   assert.deepEqual(groups.data.groups.flat().map(row => row.nim), ["25110200041"]);
+
+  const nim = "25110200041";
+  const historyPath = "/api/admin/students/" + nim + "/history";
+  assert.equal((await call(historyPath)).status, 401);
+  assert.equal((await call(historyPath, { token: normal.data.token })).status, 401);
+  assert.equal((await call("/api/admin/students/UNKNOWN/history", { token: admin.data.token })).status, 404);
+  for (const query of ["?limit=0", "?limit=51", "?before=-1", "?before=invalid", "?limit=1.5"])
+    assert.equal((await call(historyPath + query, { token: admin.data.token })).status, 400);
+  await DB.prepare("INSERT INTO audit_log(actor,action,detail,created_at) VALUES(?,?,?,?)")
+    .bind(nim, "save_vote", "Pilih anggota sendiri", "2026-11-26 20:00:00").run();
+  const newerVote = {
+    group_method: "Berdasarkan minat tema UTS",
+    ...Object.fromEntries(themes.map((theme, i) => ["theme_rank_" + (i + 1), theme])),
+    custom_theme: "Historical free title", reason: "First audited choice",
+    ip: "198.51.100.99", city: "Spoofed body city"
+  };
+  assert.equal((await call("/api/vote", {
+    method: "PUT", token: normal.data.token, body: newerVote,
+    ip: "203.0.113.10", cf: { city: "Jakarta", region: "Jakarta", country: "ID", timezone: "Asia/Jakarta" }
+  })).status, 200);
+  const latestLogin = await call("/api/login", { method: "POST",
+    body: { nim, name: "AINUN KHOLISHAH", turnstileToken: "local" },
+    ip: "2001:db8::10", cf: { country: "ID", city: "Bandung", region: "West Java" }
+  });
+  assert.equal(latestLogin.status, 200);
+  const firstPage = await call(historyPath + "?limit=2", { token: admin.data.token });
+  assert.equal(firstPage.status, 200);
+  assert.equal(firstPage.data.events.length, 2);
+  assert.ok(firstPage.data.nextBefore);
+  const [loginEvent, voteEvent] = firstPage.data.events;
+  assert.equal(loginEvent.action, "login");
+  assert.equal(loginEvent.network.ip, "2001:db8::10");
+  assert.equal(loginEvent.network.city, "Bandung");
+  assert.equal(voteEvent.action, "save_vote");
+  assert.equal(voteEvent.network.ip, "203.0.113.10");
+  assert.equal(voteEvent.network.city, "Jakarta");
+  assert.equal(voteEvent.vote.custom_theme, "Historical free title");
+  assert.equal(voteEvent.vote.reason, "First audited choice");
+  assert.ok(voteEvent.created_at);
+  const page2 = await call(historyPath + "?limit=2&before=" + firstPage.data.nextBefore, { token: admin.data.token });
+  assert.equal(page2.status, 200);
+  assert.ok(page2.data.events.every(event => event.id < firstPage.data.nextBefore));
+  assert.ok(page2.data.events.some(event => event.legacy_method === "Pilih anggota sendiri" && event.network.ip === null));
+  const updatedVote = { ...newerVote, reason: "Second audited choice" };
+  assert.equal((await call("/api/vote", { method: "PUT", token: normal.data.token, body: updatedVote, ip: "203.0.113.20" })).status, 200);
+  const history = (await call(historyPath, { token: admin.data.token })).data.events;
+  assert.equal(history[0].vote.reason, "Second audited choice");
+  assert.equal(history[0].network.city, null);
+  assert.ok(history.some(event => event.vote?.reason === "First audited choice"));
+  assert.ok(history.every(event => !JSON.stringify(event).includes("local-regression-only")));
+  const auditBefore = sqlite.prepare("SELECT COUNT(*) n FROM audit_log WHERE actor=? AND action='save_vote'").get(nim).n;
+  assert.equal((await call("/api/vote", { method: "PUT", token: normal.data.token, body: { ...updatedVote, theme_rank_1: "invalid" } })).status, 400);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM audit_log WHERE actor=? AND action='save_vote'").get(nim).n, auditBefore);
+  sqlite.exec("CREATE TRIGGER reject_vote_audit BEFORE INSERT ON audit_log WHEN NEW.action='save_vote' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END");
+  await assert.rejects(call("/api/vote", { method: "PUT", token: normal.data.token, body: { ...updatedVote, reason: "Must roll back" } }));
+  assert.equal(sqlite.prepare("SELECT reason FROM votes WHERE nim=?").get(nim).reason, "Second audited choice");
+  sqlite.exec("DROP TRIGGER reject_vote_audit");
+  sqlite.exec(readFileSync(new URL("../database/schema.sql", import.meta.url), "utf8"));
+  sqlite.exec(readFileSync(new URL("../database/seed_students.sql", import.meta.url), "utf8"));
+  assert.equal(sqlite.prepare("SELECT COUNT(*) n FROM audit_log WHERE actor=? AND action='save_vote'").get(nim).n, auditBefore);
+  // Restore the local fixture's final choice for the existing reset assertions.
+  assert.equal((await call("/api/vote", { method: "PUT", token: normal.data.token, body: { ...updatedVote, reason: "class-regression" } })).status, 200);
+  console.log("PASS ACTIVITY HISTORY: admin-only, legacy timestamps, server metadata, immutable snapshots, pagination, reseed and atomic rollback");
+
   const reset = await call("/api/admin/reset-smoke-test", {
     method: "DELETE", token: admin.data.token,
   });
