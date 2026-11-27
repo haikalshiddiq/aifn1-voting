@@ -24,7 +24,7 @@ async function boot({ token = null, oldError = "" } = {}) {
     const classes = new Set((match[0].match(/class="([^"]*)"/)?.[1] || "").split(/\s+/));
     nodes.set("#" + match[1], {
       value: "", innerHTML: "", textContent: "", disabled: false, scrollIntoView() {},
-      classList: { add: x => classes.add(x), remove: x => classes.delete(x), contains: x => classes.has(x) }
+      classList: { add: x => classes.add(x), remove: x => classes.delete(x), contains: x => classes.has(x), toggle(x, force) { if (force) classes.add(x); else classes.delete(x); return classes.has(x); } }
     });
   }
   nodes.get("#message").innerHTML = oldError;
