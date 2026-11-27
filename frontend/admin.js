@@ -1,5 +1,6 @@
 const C = window.APP_CONFIG, API = C.API_BASE.replace(/\/$/, '');
 let widget = null, data = null, signingIn = false;
+let historyNim = null, historyBefore = null, historyRequest = 0;
 const $ = selector => document.querySelector(selector);
 const tok = () => sessionStorage.getItem('admin_token');
 function esc(value) {
@@ -49,7 +50,7 @@ function drawStudents(rows) {
     <td>${esc(student.name)}</td><td>${student.voted ? 'Sudah voting' : 'Belum voting'}</td>
     <td>${student.voted ? esc(student.group_method || '—') : '—'}</td>
     <td>${student.voted ? esc(student.theme_rank_1 || '—') : '—'}</td>
-    <td>${voteDetails(student)}</td><td>${esc(dateWib(student.updated_at))}</td>
+    <td>${voteDetails(student)}<button type="button" class="btn ghost history-open" data-history-nim="${esc(student.nim)}">Riwayat akses &amp; vote</button></td><td>${esc(dateWib(student.updated_at))}</td>
   </tr>`).join('') : '<tr><td colspan="7">Mahasiswa tidak ditemukan.</td></tr>';
 }
 function render(result) {
@@ -102,6 +103,64 @@ $('#form').onsubmit = async event => {
     button.textContent = 'Masuk';
   }
 };
+
+function eventMarkup(event) {
+  const net = event.network || {};
+  const location = [net.city, net.region, net.country].filter(Boolean).join(', ') || 'Tidak tersedia';
+  const ranks = event.vote ? '<ol>' + [1,2,3,4,5].map(rank =>
+    '<li>' + esc(event.vote['theme_rank_' + rank] || '—') + '</li>').join('') + '</ol>' : '';
+  const choice = event.vote ? '<details><summary>Pilihan pada penyimpanan ini</summary><p><strong>Metode kelompok:</strong> ' +
+    esc(event.vote.group_method) + '</p>' + ranks +
+    '<p><strong>Tema usulan:</strong> ' + esc(event.vote.custom_theme || '—') +
+    '</p><p><strong>Alasan:</strong> ' + esc(event.vote.reason || '—') + '</p></details>' :
+    (event.action === 'save_vote' ? '<p class="muted">Detail pilihan lengkap pada kejadian lama belum direkam.' +
+    (event.legacy_method ? ' Metode kelompok: ' + esc(event.legacy_method) : '') + '</p>' : '');
+  return '<article class="history-event"><h3>' + (event.action === 'login' ? 'Login mahasiswa' : 'Simpan / ubah vote') +
+    '</h3><p><strong>Waktu:</strong> ' + esc(dateWib(event.created_at)) +
+    '<br><strong>IP:</strong> ' + esc(net.ip || 'Tidak tersedia / belum direkam') +
+    '<br><strong>Perkiraan lokasi:</strong> ' + esc(location) + '</p>' + choice + '</article>';
+}
+async function loadHistory(append = false) {
+  const nim = historyNim, request = ++historyRequest;
+  if (!nim) return;
+  $('#historyMore').disabled = true;
+  $('#historyStatus').textContent = 'Memuat riwayat…';
+  try {
+    const query = append && historyBefore ? '?before=' + historyBefore : '';
+    const result = await api('/api/admin/students/' + encodeURIComponent(nim) + '/history' + query);
+    if (request !== historyRequest || nim !== historyNim) return;
+    $('#historyTitle').textContent = 'Riwayat — ' + result.student.name + ' (' + result.student.nim + ')';
+    const content = result.events.map(eventMarkup).join('');
+    if (append) $('#historyList').innerHTML += content;
+    else $('#historyList').innerHTML = content || '<p class="muted">Belum ada aktivitas login atau penyimpanan vote yang tercatat.</p>';
+    historyBefore = result.nextBefore;
+    $('#historyMore').classList.toggle('hidden', !historyBefore);
+    $('#historyStatus').textContent = 'Urutan terbaru dahulu. Waktu ditampilkan dalam WIB.';
+  } catch (error) {
+    if (request === historyRequest) $('#historyStatus').textContent = error.message;
+  } finally {
+    if (request === historyRequest) $('#historyMore').disabled = false;
+  }
+}
+$('#students').onclick = async event => {
+  const button = event.target.closest('button[data-history-nim]');
+  if (!button) return;
+  historyNim = button.dataset.historyNim;
+  historyBefore = null;
+  $('#historyList').innerHTML = '';
+  $('#historyMore').classList.add('hidden');
+  $('#historyPanel').classList.remove('hidden');
+  $('#historyTitle').textContent = 'Riwayat — ' + historyNim;
+  $('#historyPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  await loadHistory();
+};
+$('#historyMore').onclick = () => loadHistory(true);
+$('#historyClose').onclick = () => {
+  historyNim = null; historyBefore = null; historyRequest++;
+  $('#historyPanel').classList.add('hidden');
+  $('#historyList').innerHTML = '';
+};
+
 $('#refresh').onclick = async () => {
   msg('');
   try { await load(); } catch (error) { msg(error.message, true); }
